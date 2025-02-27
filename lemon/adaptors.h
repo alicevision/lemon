@@ -37,7 +37,7 @@
 
 namespace lemon {
 
-#ifdef _MSC_VER
+#if defined _MSC_VER and __cplusplus < 202002L
 #define LEMON_SCOPE_FIX(OUTER, NESTED) OUTER::NESTED
 #else
 #define LEMON_SCOPE_FIX(OUTER, NESTED) typename OUTER::template NESTED
