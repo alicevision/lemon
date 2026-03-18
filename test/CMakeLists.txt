@@ -1,17 +1,51 @@
-INCLUDE_DIRECTORIES(
-  ${PROJECT_SOURCE_DIR}
-  ${PROJECT_BINARY_DIR}
-)
+# ---------------------------------------------------------------------------
+# test/CMakeLists.txt
+# ---------------------------------------------------------------------------
 
-LINK_DIRECTORIES(
-  ${PROJECT_BINARY_DIR}/lemon
-)
+option(LEMON_BUILD_TESTS "Build LEMON test executables." OFF)
 
-SET(TEST_WITH_VALGRIND "NO" CACHE STRING
-  "Run the test with valgrind (YES/NO).")
-SET(VALGRIND_FLAGS "" CACHE STRING "Valgrind flags used by the tests.")
+if(NOT LEMON_BUILD_TESTS)
+  return()
+endif()
 
-SET(TESTS
+# ---------------------------------------------------------------------------
+# Valgrind
+# ---------------------------------------------------------------------------
+option(LEMON_TEST_WITH_VALGRIND "Run tests under valgrind." OFF)
+set(LEMON_VALGRIND_FLAGS "" CACHE STRING "Extra valgrind flags for tests.")
+
+# ---------------------------------------------------------------------------
+# Helper : enregistre un test, avec ou sans valgrind
+# ---------------------------------------------------------------------------
+function(lemon_add_test target)
+  if(LEMON_TEST_WITH_VALGRIND)
+    add_test(
+      NAME    ${target}
+      COMMAND valgrind --error-exitcode=1 ${LEMON_VALGRIND_FLAGS}
+              $<TARGET_FILE:${target}>
+    )
+  else()
+    add_test(NAME ${target} COMMAND ${target})
+  endif()
+  add_dependencies(check ${target})
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Helper : crée un exécutable de test (EXCLUDE_FROM_ALL hors Maintainer)
+# ---------------------------------------------------------------------------
+function(lemon_add_test_executable target)
+  if(CMAKE_BUILD_TYPE STREQUAL "Maintainer")
+    add_executable(${target} ${target}.cc)
+  else()
+    add_executable(${target} EXCLUDE_FROM_ALL ${target}.cc)
+  endif()
+  target_link_libraries(${target} PRIVATE LEMON::lemon)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Tests standards
+# ---------------------------------------------------------------------------
+set(LEMON_TESTS
   adaptors_test
   arc_look_up_test
   bellman_ford_test
@@ -56,106 +90,78 @@ SET(TESTS
   unionfind_test
 )
 
-IF(LEMON_HAVE_LP)
-  IF(${CMAKE_BUILD_TYPE} STREQUAL "Maintainer")
-    ADD_EXECUTABLE(lp_test lp_test.cc)
-  ELSE()
-    ADD_EXECUTABLE(lp_test EXCLUDE_FROM_ALL lp_test.cc)
-  ENDIF()
+foreach(test IN LISTS LEMON_TESTS)
+  lemon_add_test_executable(${test})
+  lemon_add_test(${test})
+endforeach()
 
-  SET(LP_TEST_LIBS lemon)
+# ---------------------------------------------------------------------------
+# LP test (nécessite au moins un solver LP)
+# ---------------------------------------------------------------------------
+if(LEMON_HAVE_LP)
+  lemon_add_test_executable(lp_test)
 
-  IF(LEMON_HAVE_GLPK)
-    SET(LP_TEST_LIBS ${LP_TEST_LIBS} ${GLPK_LIBRARIES})
-  ENDIF()
-  IF(LEMON_HAVE_CPLEX)
-    SET(LP_TEST_LIBS ${LP_TEST_LIBS} ${ILOG_LIBRARIES})
-  ENDIF()
-  IF(LEMON_HAVE_CLP)
-    SET(LP_TEST_LIBS ${LP_TEST_LIBS} ${COIN_CLP_LIBRARIES})
-  ENDIF()
-  IF(LEMON_HAVE_SOPLEX)
-    SET(LP_TEST_LIBS ${LP_TEST_LIBS} ${SOPLEX_LIBRARIES})
-  ENDIF()
+  # Les solvers sont linkés en PRIVATE : détails d'implémentation du test
+  target_link_libraries(lp_test PRIVATE
+    $<$<BOOL:${LEMON_HAVE_GLPK}>:${GLPK_LIBRARIES}>
+    $<$<BOOL:${LEMON_HAVE_CPLEX}>:${ILOG_LIBRARIES}>
+    $<$<BOOL:${LEMON_HAVE_CLP}>:${COIN_CLP_LIBRARIES}>
+    $<$<BOOL:${LEMON_HAVE_SOPLEX}>:${SOPLEX_LIBRARIES}>
+  )
 
-  TARGET_LINK_LIBRARIES(lp_test ${LP_TEST_LIBS})
-  ADD_TEST(lp_test lp_test)
-  ADD_DEPENDENCIES(check lp_test)
+  lemon_add_test(lp_test)
 
-  IF(WIN32 AND LEMON_HAVE_GLPK)
-    GET_TARGET_PROPERTY(TARGET_LOC lp_test LOCATION)
-    GET_FILENAME_COMPONENT(TARGET_PATH ${TARGET_LOC} PATH)
-    ADD_CUSTOM_COMMAND(TARGET lp_test POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/glpk.dll ${TARGET_PATH}
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/libltdl3.dll ${TARGET_PATH}
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/zlib1.dll ${TARGET_PATH}
-    )
-  ENDIF()
+  # Copie des DLL solver au même endroit que l'exécutable (Windows only)
+  if(WIN32)
+    if(LEMON_HAVE_GLPK)
+      add_custom_command(TARGET lp_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+          "${GLPK_BIN_DIR}/glpk.dll"
+          "${GLPK_BIN_DIR}/libltdl3.dll"
+          "${GLPK_BIN_DIR}/zlib1.dll"
+          "$<TARGET_FILE_DIR:lp_test>"
+      )
+    endif()
+    if(LEMON_HAVE_CPLEX)
+      add_custom_command(TARGET lp_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+          "${ILOG_CPLEX_DLL}"
+          "$<TARGET_FILE_DIR:lp_test>"
+      )
+    endif()
+  endif()
+endif()
 
-  IF(WIN32 AND LEMON_HAVE_CPLEX)
-    GET_TARGET_PROPERTY(TARGET_LOC lp_test LOCATION)
-    GET_FILENAME_COMPONENT(TARGET_PATH ${TARGET_LOC} PATH)
-    ADD_CUSTOM_COMMAND(TARGET lp_test POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy ${ILOG_CPLEX_DLL} ${TARGET_PATH}
-    )
-  ENDIF()
-ENDIF()
+# ---------------------------------------------------------------------------
+# MIP test (nécessite au moins un solver MIP)
+# ---------------------------------------------------------------------------
+if(LEMON_HAVE_MIP)
+  lemon_add_test_executable(mip_test)
 
-IF(LEMON_HAVE_MIP)
-  IF(${CMAKE_BUILD_TYPE} STREQUAL "Maintainer")
-    ADD_EXECUTABLE(mip_test mip_test.cc)
-  ELSE()
-    ADD_EXECUTABLE(mip_test EXCLUDE_FROM_ALL mip_test.cc)
-  ENDIF()
+  target_link_libraries(mip_test PRIVATE
+    $<$<BOOL:${LEMON_HAVE_GLPK}>:${GLPK_LIBRARIES}>
+    $<$<BOOL:${LEMON_HAVE_CPLEX}>:${ILOG_LIBRARIES}>
+    $<$<BOOL:${LEMON_HAVE_CBC}>:${COIN_CBC_LIBRARIES}>
+  )
 
-  SET(MIP_TEST_LIBS lemon)
+  lemon_add_test(mip_test)
 
-  IF(LEMON_HAVE_GLPK)
-    SET(MIP_TEST_LIBS ${MIP_TEST_LIBS} ${GLPK_LIBRARIES})
-  ENDIF()
-  IF(LEMON_HAVE_CPLEX)
-    SET(MIP_TEST_LIBS ${MIP_TEST_LIBS} ${ILOG_LIBRARIES})
-  ENDIF()
-  IF(LEMON_HAVE_CBC)
-    SET(MIP_TEST_LIBS ${MIP_TEST_LIBS} ${COIN_CBC_LIBRARIES})
-  ENDIF()
-
-  TARGET_LINK_LIBRARIES(mip_test ${MIP_TEST_LIBS})
-  ADD_TEST(mip_test mip_test)
-  ADD_DEPENDENCIES(check mip_test)
-
-  IF(WIN32 AND LEMON_HAVE_GLPK)
-    GET_TARGET_PROPERTY(TARGET_LOC mip_test LOCATION)
-    GET_FILENAME_COMPONENT(TARGET_PATH ${TARGET_LOC} PATH)
-    ADD_CUSTOM_COMMAND(TARGET mip_test POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/glpk.dll ${TARGET_PATH}
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/libltdl3.dll ${TARGET_PATH}
-      COMMAND ${CMAKE_COMMAND} -E copy ${GLPK_BIN_DIR}/zlib1.dll ${TARGET_PATH}
-    )
-  ENDIF()
-
-  IF(WIN32 AND LEMON_HAVE_CPLEX)
-    GET_TARGET_PROPERTY(TARGET_LOC mip_test LOCATION)
-    GET_FILENAME_COMPONENT(TARGET_PATH ${TARGET_LOC} PATH)
-    ADD_CUSTOM_COMMAND(TARGET mip_test POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy ${ILOG_CPLEX_DLL} ${TARGET_PATH}
-    )
-  ENDIF()
-ENDIF()
-
-FOREACH(TEST_NAME ${TESTS})
-  IF(${CMAKE_BUILD_TYPE} STREQUAL "Maintainer")
-    ADD_EXECUTABLE(${TEST_NAME} ${TEST_NAME}.cc)
-  ELSE()
-    ADD_EXECUTABLE(${TEST_NAME} EXCLUDE_FROM_ALL ${TEST_NAME}.cc)
-  ENDIF()
-  TARGET_LINK_LIBRARIES(${TEST_NAME} lemon)
-    IF(TEST_WITH_VALGRIND)
-      ADD_TEST(${TEST_NAME}
-        valgrind --error-exitcode=1 ${VALGRIND_FLAGS}
-        ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME} )
-    ELSE()
-      ADD_TEST(${TEST_NAME} ${TEST_NAME})
-    ENDIF()
-  ADD_DEPENDENCIES(check ${TEST_NAME})
-ENDFOREACH()
+  if(WIN32)
+    if(LEMON_HAVE_GLPK)
+      add_custom_command(TARGET mip_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+          "${GLPK_BIN_DIR}/glpk.dll"
+          "${GLPK_BIN_DIR}/libltdl3.dll"
+          "${GLPK_BIN_DIR}/zlib1.dll"
+          "$<TARGET_FILE_DIR:mip_test>"
+      )
+    endif()
+    if(LEMON_HAVE_CPLEX)
+      add_custom_command(TARGET mip_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+          "${ILOG_CPLEX_DLL}"
+          "$<TARGET_FILE_DIR:mip_test>"
+      )
+    endif()
+  endif()
+endif()

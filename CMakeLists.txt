@@ -1,375 +1,394 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+cmake_minimum_required(VERSION 3.21)
 
-CMAKE_POLICY(SET CMP0048 OLD)
-
-SET(PROJECT_NAME "LEMON")
-PROJECT(${PROJECT_NAME})
-
-INCLUDE(FindPythonInterp)
-INCLUDE(FindWget)
-
-IF(EXISTS ${PROJECT_SOURCE_DIR}/cmake/version.cmake)
-  INCLUDE(${PROJECT_SOURCE_DIR}/cmake/version.cmake)
-ELSEIF(DEFINED ENV{LEMON_VERSION})
-  SET(LEMON_VERSION $ENV{LEMON_VERSION} CACHE STRING "LEMON version string.")
-ELSE()
-  EXECUTE_PROCESS(
-    COMMAND
-    hg log -r. --template "{latesttag}"
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    OUTPUT_VARIABLE HG_REVISION_TAG
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE
+# ---------------------------------------------------------------------------
+# Version
+# Priority: cmake/version.cmake > ENV{LEMON_VERSION} > FATAL_ERROR
+# ---------------------------------------------------------------------------
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cmake")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cmake")
+elseif(DEFINED ENV{LEMON_VERSION})
+  set(LEMON_VERSION "$ENV{LEMON_VERSION}" CACHE STRING "LEMON version string.")
+else()
+  message(FATAL_ERROR
+    "LEMON version could not be determined.\n"
+    "Please set the LEMON_VERSION environment variable before configuring.\n"
+    "Example: LEMON_VERSION=1.3.1 cmake ..."
   )
-  EXECUTE_PROCESS(
-    COMMAND
-    hg log -r. --template "{latesttagdistance}"
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    OUTPUT_VARIABLE HG_REVISION_DIST
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE
+endif()
+
+# ---------------------------------------------------------------------------
+# Project
+# ---------------------------------------------------------------------------
+project(LEMON
+  VERSION   "${LEMON_VERSION}"
+  LANGUAGES C CXX
+)
+
+set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
+# ---------------------------------------------------------------------------
+# C++ standard
+# ---------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD          20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS        OFF)
+
+# ---------------------------------------------------------------------------
+# Optional dependencies (documentation)
+# ---------------------------------------------------------------------------
+find_package(Doxygen OPTIONAL_COMPONENTS dot)
+find_package(Ghostscript QUIET)
+
+# ---------------------------------------------------------------------------
+# Optional solver back-ends
+# ---------------------------------------------------------------------------
+option(LEMON_ENABLE_GLPK   "Enable GLPK solver backend."         ON)
+option(LEMON_ENABLE_ILOG   "Enable ILOG (CPLEX) solver backend." ON)
+option(LEMON_ENABLE_COIN   "Enable COIN solver backend."         ON)
+option(LEMON_ENABLE_SOPLEX "Enable SoPlex solver backend."       ON)
+
+if(LEMON_ENABLE_GLPK)
+  find_package(GLPK 4.33 QUIET)
+endif()
+if(LEMON_ENABLE_ILOG)
+  find_package(ILOG QUIET)
+endif()
+if(LEMON_ENABLE_COIN)
+  find_package(COIN QUIET)
+endif()
+if(LEMON_ENABLE_SOPLEX)
+  find_package(SOPLEX QUIET)
+endif()
+
+# Capability flags derived from found solvers
+if(GLPK_FOUND)
+  set(LEMON_HAVE_LP   TRUE)
+  set(LEMON_HAVE_MIP  TRUE)
+  set(LEMON_HAVE_GLPK TRUE)
+endif()
+if(ILOG_FOUND)
+  set(LEMON_HAVE_LP    TRUE)
+  set(LEMON_HAVE_MIP   TRUE)
+  set(LEMON_HAVE_CPLEX TRUE)
+endif()
+if(COIN_FOUND)
+  set(LEMON_HAVE_LP  TRUE)
+  set(LEMON_HAVE_MIP TRUE)
+  set(LEMON_HAVE_CLP TRUE)
+  set(LEMON_HAVE_CBC TRUE)
+endif()
+if(SOPLEX_FOUND)
+  set(LEMON_HAVE_LP     TRUE)
+  set(LEMON_HAVE_SOPLEX TRUE)
+endif()
+
+# Default LP / MIP solver selection (priority: CPLEX > CLP/CBC > GLPK > SOPLEX)
+if(ILOG_FOUND)
+  set(_default_lp  "CPLEX")
+  set(_default_mip "CPLEX")
+elseif(COIN_FOUND)
+  set(_default_lp  "CLP")
+  set(_default_mip "CBC")
+elseif(GLPK_FOUND)
+  set(_default_lp  "GLPK")
+  set(_default_mip "GLPK")
+elseif(SOPLEX_FOUND)
+  set(_default_lp  "SOPLEX")
+  set(_default_mip "")
+else()
+  set(_default_lp  "")
+  set(_default_mip "")
+endif()
+
+# Validate / reset cached LP choice if the corresponding library is not found
+set(_lp_needs_reset FALSE)
+if(NOT LEMON_DEFAULT_LP)
+  set(_lp_needs_reset TRUE)
+elseif((LEMON_DEFAULT_LP STREQUAL "CPLEX"  AND NOT ILOG_FOUND)   OR
+       (LEMON_DEFAULT_LP STREQUAL "CLP"    AND NOT COIN_FOUND)   OR
+       (LEMON_DEFAULT_LP STREQUAL "GLPK"   AND NOT GLPK_FOUND)   OR
+       (LEMON_DEFAULT_LP STREQUAL "SOPLEX" AND NOT SOPLEX_FOUND))
+  set(_lp_needs_reset TRUE)
+endif()
+set(LEMON_DEFAULT_LP "${_default_lp}" CACHE STRING
+  "Default LP solver backend (GLPK, CPLEX, CLP or SOPLEX)"
+  FORCE)
+
+set(_mip_needs_reset FALSE)
+if(NOT LEMON_DEFAULT_MIP)
+  set(_mip_needs_reset TRUE)
+elseif((LEMON_DEFAULT_MIP STREQUAL "CPLEX" AND NOT ILOG_FOUND) OR
+       (LEMON_DEFAULT_MIP STREQUAL "CBC"   AND NOT COIN_FOUND) OR
+       (LEMON_DEFAULT_MIP STREQUAL "GLPK"  AND NOT GLPK_FOUND))
+  set(_mip_needs_reset TRUE)
+endif()
+set(LEMON_DEFAULT_MIP "${_default_mip}" CACHE STRING
+  "Default MIP solver backend (GLPK, CPLEX or CBC)"
+  FORCE)
+
+unset(_default_lp)
+unset(_default_mip)
+unset(_lp_needs_reset)
+unset(_mip_needs_reset)
+
+# ---------------------------------------------------------------------------
+# Compiler warning flags
+# ---------------------------------------------------------------------------
+if(DEFINED ENV{LEMON_CXX_WARNING})
+  # La variable d'env est une string — separate_arguments la découpe en liste CMake
+  separate_arguments(_cxx_warning_list UNIX_COMMAND "$ENV{LEMON_CXX_WARNING}")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  # Chaque flag est un élément de liste séparé : pas de string(JOIN), pas de quotes
+  set(_cxx_warning_list
+    -Wall
+    -Wextra
+    -Wunused
+    -Wformat=2
+    -Wctor-dtor-privacy
+    -Wnon-virtual-dtor
+    -Wno-char-subscripts
+    -Wwrite-strings
+    -Wreturn-type
+    -Wcast-qual
+    -Wcast-align
+    -Wsign-promo
+    -Woverloaded-virtual
+    -fno-strict-aliasing
+    -Wold-style-cast
+    -Wno-unknown-pragmas
   )
-  EXECUTE_PROCESS(
-    COMMAND
-    hg log -r. --template "{node|short}"
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    OUTPUT_VARIABLE HG_REVISION_ID
-    ERROR_QUIET
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-  )
+elseif(MSVC)
+  # C4250: inherits via dominance  C4355: 'this' in initializer list
+  # C4503: name truncated           C4800: bool coercion perf warning
+  # C4996: deprecated function
+  set(_cxx_warning_list /wd4250 /wd4355 /wd4503 /wd4800 /wd4996)
+else()
+  set(_cxx_warning_list -Wall)
+endif()
 
-  IF(HG_REVISION_TAG STREQUAL "")
-    SET(HG_REVISION_ID "hg-tip")
-  ELSE()
-    IF(HG_REVISION_TAG STREQUAL "null")
-      SET(HG_REVISION_TAG "trunk")
-    ELSEIF(HG_REVISION_TAG MATCHES "^r")
-      STRING(SUBSTRING ${HG_REVISION_TAG} 1 -1 HG_REVISION_TAG)
-    ENDIF()
-    IF(HG_REVISION_DIST STREQUAL "0")
-      SET(HG_REVISION ${HG_REVISION_TAG})
-    ELSE()
-      SET(HG_REVISION
-	"${HG_REVISION_TAG}+${HG_REVISION_DIST}-${HG_REVISION_ID}")
-    ENDIF()
-  ENDIF()
+# Cache : string lisible dans cmake-gui / ccmake
+string(JOIN " " LEMON_CXX_WARNING_FLAGS ${_cxx_warning_list})
+set(LEMON_CXX_WARNING_FLAGS "${LEMON_CXX_WARNING_FLAGS}"
+  CACHE STRING "LEMON warning flags.")
 
-  SET(LEMON_VERSION ${HG_REVISION} CACHE STRING "LEMON version string.")
-ENDIF()
+# Interface target — transporte la liste de flags (éléments séparés, pas une string)
+add_library(lemon_warnings INTERFACE)
+target_compile_options(lemon_warnings INTERFACE
+  $<BUILD_INTERFACE:${_cxx_warning_list}>
+)
+unset(_cxx_warning_list)
 
-SET(PROJECT_VERSION ${LEMON_VERSION})
+# ---------------------------------------------------------------------------
+# Build type & Maintainer configuration
+# ---------------------------------------------------------------------------
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+    "Build type: None Debug Release RelWithDebInfo MinSizeRel Maintainer." FORCE)
+endif()
 
-SET(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+if(MSVC)
+  set(_maintainer_cxx  "/WX ${CMAKE_CXX_FLAGS_DEBUG}")
+  set(_maintainer_c    "/WX ${CMAKE_C_FLAGS_DEBUG}")
+else()
+  set(_maintainer_cxx  "-Werror -ggdb -O0")
+  set(_maintainer_c    "-Werror -O0")
+endif()
 
-FIND_PACKAGE(Doxygen)
-FIND_PACKAGE(Ghostscript)
+set(CMAKE_CXX_FLAGS_MAINTAINER    "${_maintainer_cxx}"
+  CACHE STRING "C++ flags for maintainer builds." FORCE)
+set(CMAKE_C_FLAGS_MAINTAINER      "${_maintainer_c}"
+  CACHE STRING "C flags for maintainer builds."   FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_MAINTAINER
+  "${CMAKE_EXE_LINKER_FLAGS_DEBUG}"
+  CACHE STRING "Linker flags for maintainer builds." FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_MAINTAINER
+  "${CMAKE_SHARED_LINKER_FLAGS_DEBUG}"
+  CACHE STRING "Shared linker flags for maintainer builds." FORCE)
 
-SET(LEMON_ENABLE_GLPK YES CACHE STRING "Enable GLPK solver backend.")
-SET(LEMON_ENABLE_ILOG YES CACHE STRING "Enable ILOG (CPLEX) solver backend.")
-SET(LEMON_ENABLE_COIN YES CACHE STRING "Enable COIN solver backend.")
-SET(LEMON_ENABLE_SOPLEX YES CACHE STRING "Enable SoPlex solver backend.")
+mark_as_advanced(
+  CMAKE_CXX_FLAGS_MAINTAINER
+  CMAKE_C_FLAGS_MAINTAINER
+  CMAKE_EXE_LINKER_FLAGS_MAINTAINER
+  CMAKE_SHARED_LINKER_FLAGS_MAINTAINER
+)
 
-IF(LEMON_ENABLE_GLPK) 
-  FIND_PACKAGE(GLPK 4.33)
-ENDIF(LEMON_ENABLE_GLPK)
-IF(LEMON_ENABLE_ILOG)
-  FIND_PACKAGE(ILOG)
-ENDIF(LEMON_ENABLE_ILOG)
-IF(LEMON_ENABLE_COIN)
-  FIND_PACKAGE(COIN)
-ENDIF(LEMON_ENABLE_COIN)
-IF(LEMON_ENABLE_SOPLEX)
-  FIND_PACKAGE(SOPLEX)
-ENDIF(LEMON_ENABLE_SOPLEX)
+if(CMAKE_CONFIGURATION_TYPES)
+  list(APPEND CMAKE_CONFIGURATION_TYPES Maintainer)
+  list(REMOVE_DUPLICATES CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}"
+    CACHE STRING "Available build configurations." FORCE)
+endif()
 
-IF(GLPK_FOUND)
-  SET(LEMON_HAVE_LP TRUE)
-  SET(LEMON_HAVE_MIP TRUE)
-  SET(LEMON_HAVE_GLPK TRUE)
-ENDIF(GLPK_FOUND)
-IF(ILOG_FOUND)
-  SET(LEMON_HAVE_LP TRUE)
-  SET(LEMON_HAVE_MIP TRUE)
-  SET(LEMON_HAVE_CPLEX TRUE)
-ENDIF(ILOG_FOUND)
-IF(COIN_FOUND)
-  SET(LEMON_HAVE_LP TRUE)
-  SET(LEMON_HAVE_MIP TRUE)
-  SET(LEMON_HAVE_CLP TRUE)
-  SET(LEMON_HAVE_CBC TRUE)
-ENDIF(COIN_FOUND)
-IF(SOPLEX_FOUND)
-  SET(LEMON_HAVE_LP TRUE)
-  SET(LEMON_HAVE_SOPLEX TRUE)
-ENDIF(SOPLEX_FOUND)
+unset(_maintainer_cxx)
+unset(_maintainer_c)
 
-IF(ILOG_FOUND)
-  SET(DEFAULT_LP "CPLEX")
-  SET(DEFAULT_MIP "CPLEX")
-ELSEIF(COIN_FOUND)
-  SET(DEFAULT_LP "CLP")
-  SET(DEFAULT_MIP "CBC")
-ELSEIF(GLPK_FOUND)
-  SET(DEFAULT_LP "GLPK")
-  SET(DEFAULT_MIP "GLPK")
-ELSEIF(SOPLEX_FOUND)
-  SET(DEFAULT_LP "SOPLEX")
-ENDIF()
+# ---------------------------------------------------------------------------
+# Platform / type introspection
+# ---------------------------------------------------------------------------
+include(CheckTypeSize)
+check_type_size("long long" LONG_LONG)
+set(LEMON_HAVE_LONG_LONG ${HAVE_LONG_LONG})
 
-IF(NOT LEMON_DEFAULT_LP OR
-    (NOT ILOG_FOUND AND (LEMON_DEFAULT_LP STREQUAL "CPLEX")) OR
-    (NOT COIN_FOUND AND (LEMON_DEFAULT_LP STREQUAL "CLP")) OR
-    (NOT GLPK_FOUND AND (LEMON_DEFAULT_LP STREQUAL "GLPK")) OR
-    (NOT SOPLEX_FOUND AND (LEMON_DEFAULT_LP STREQUAL "SOPLEX")))
-  SET(LEMON_DEFAULT_LP ${DEFAULT_LP} CACHE STRING
-    "Default LP solver backend (GLPK, CPLEX, CLP or SOPLEX)" FORCE)
-ELSE()
-  SET(LEMON_DEFAULT_LP ${DEFAULT_LP} CACHE STRING
-    "Default LP solver backend (GLPK, CPLEX, CLP or SOPLEX)")
-ENDIF()
-IF(NOT LEMON_DEFAULT_MIP OR
-    (NOT ILOG_FOUND AND (LEMON_DEFAULT_MIP STREQUAL "CPLEX")) OR
-    (NOT COIN_FOUND AND (LEMON_DEFAULT_MIP STREQUAL "CBC")) OR
-    (NOT GLPK_FOUND AND (LEMON_DEFAULT_MIP STREQUAL "GLPK")))
-  SET(LEMON_DEFAULT_MIP ${DEFAULT_MIP} CACHE STRING
-    "Default MIP solver backend (GLPK, CPLEX or CBC)" FORCE)
-ELSE()
-  SET(LEMON_DEFAULT_MIP ${DEFAULT_MIP} CACHE STRING
-    "Default MIP solver backend (GLPK, CPLEX or CBC)")
-ENDIF()
+find_package(Threads QUIET)
 
+if(NOT LEMON_THREADING)
+  if(CMAKE_USE_PTHREADS_INIT)
+    set(LEMON_THREADING "Pthread")
+  elseif(CMAKE_USE_WIN32_THREADS_INIT)
+    set(LEMON_THREADING "Win32")
+  else()
+    set(LEMON_THREADING "None")
+  endif()
+endif()
 
-IF(DEFINED ENV{LEMON_CXX_WARNING})
-  SET(CXX_WARNING $ENV{LEMON_CXX_WARNING})
-ELSE()
-  IF(CMAKE_COMPILER_IS_GNUCXX)
-    SET(CXX_WARNING "-Wall -W -Wunused -Wformat=2 -Wctor-dtor-privacy -Wnon-virtual-dtor -Wno-char-subscripts -Wwrite-strings -Wno-char-subscripts -Wreturn-type -Wcast-qual -Wcast-align -Wsign-promo -Woverloaded-virtual -fno-strict-aliasing -Wold-style-cast -Wno-unknown-pragmas")
-    SET(CMAKE_CXX_FLAGS_DEBUG CACHE STRING "-ggdb")
-    SET(CMAKE_C_FLAGS_DEBUG CACHE STRING "-ggdb")
-  ELSEIF(MSVC)
-    # This part is unnecessary 'casue the same is set by the lemon/core.h.
-    # Still keep it as an example.
-    SET(CXX_WARNING "/wd4250 /wd4355 /wd4503 /wd4800 /wd4996")
-    # Suppressed warnings:
-    # C4250: 'class1' : inherits 'class2::member' via dominance
-    # C4355: 'this' : used in base member initializer list
-    # C4503: 'function' : decorated name length exceeded, name was truncated
-    # C4800: 'type' : forcing value to bool 'true' or 'false'
-    #        (performance warning)
-    # C4996: 'function': was declared deprecated
-  ELSE()
-    SET(CXX_WARNING "-Wall")
-  ENDIF()
-ENDIF()
-SET(LEMON_CXX_WARNING_FLAGS ${CXX_WARNING} CACHE STRING "LEMON warning flags.")
+set(LEMON_THREADING "${LEMON_THREADING}" CACHE STRING
+  "Threading library: Pthread | Win32 | None." FORCE)
 
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LEMON_CXX_WARNING_FLAGS}")
+if(LEMON_THREADING STREQUAL "Pthread")
+  set(LEMON_USE_PTHREAD TRUE)
+elseif(LEMON_THREADING STREQUAL "Win32")
+  set(LEMON_USE_WIN32_THREADS TRUE)
+endif()
 
-IF(MSVC)
-  SET( CMAKE_CXX_FLAGS_MAINTAINER "/WX ${CMAKE_CXX_FLAGS_DEBUG}" CACHE STRING
-    "Flags used by the C++ compiler during maintainer builds."
-    )
-  SET( CMAKE_C_FLAGS_MAINTAINER "/WX ${CMAKE_CXX_FLAGS_DEBUG}" CACHE STRING
-    "Flags used by the C compiler during maintainer builds."
-    )
-  SET( CMAKE_EXE_LINKER_FLAGS_MAINTAINER
-    "${CMAKE_EXE_LINKER_FLAGS_DEBUG}" CACHE STRING
-    "Flags used for linking binaries during maintainer builds."
-    )
-  SET( CMAKE_SHARED_LINKER_FLAGS_MAINTAINER
-    "${CMAKE_SHARED_LINKER_FLAGS_DEBUG}" CACHE STRING
-    "Flags used by the shared libraries linker during maintainer builds."
-    )
-ELSE()
-  SET( CMAKE_CXX_FLAGS_MAINTAINER "-Werror -ggdb -O0" CACHE STRING
-    "Flags used by the C++ compiler during maintainer builds."
-    )
-  SET( CMAKE_C_FLAGS_MAINTAINER "-Werror -O0" CACHE STRING
-    "Flags used by the C compiler during maintainer builds."
-    )
-  SET( CMAKE_EXE_LINKER_FLAGS_MAINTAINER
-    "${CMAKE_EXE_LINKER_FLAGS_DEBUG}" CACHE STRING
-    "Flags used for linking binaries during maintainer builds."
-    )
-  SET( CMAKE_SHARED_LINKER_FLAGS_MAINTAINER
-    "${CMAKE_SHARED_LINKER_FLAGS_DEBUG}" CACHE STRING
-    "Flags used by the shared libraries linker during maintainer builds."
-    )
-ENDIF()
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+enable_testing()
 
-MARK_AS_ADVANCED(
-    CMAKE_CXX_FLAGS_MAINTAINER
-    CMAKE_C_FLAGS_MAINTAINER
-    CMAKE_EXE_LINKER_FLAGS_MAINTAINER
-    CMAKE_SHARED_LINKER_FLAGS_MAINTAINER )
+if(CMAKE_BUILD_TYPE STREQUAL "Maintainer")
+  add_custom_target(check ALL COMMAND ${CMAKE_CTEST_COMMAND})
+else()
+  add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})
+endif()
 
-IF(CMAKE_CONFIGURATION_TYPES)
-  LIST(APPEND CMAKE_CONFIGURATION_TYPES Maintainer)
-  LIST(REMOVE_DUPLICATES CMAKE_CONFIGURATION_TYPES)
-  SET(CMAKE_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}" CACHE STRING
-      "Add the configurations that we need"
-      FORCE)
- endif()
+# ---------------------------------------------------------------------------
+# Sub-directories
+# ---------------------------------------------------------------------------
+add_subdirectory(lemon)
 
-IF(NOT CMAKE_BUILD_TYPE)
-  SET(CMAKE_BUILD_TYPE "Release")
-ENDIF()
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  add_subdirectory(contrib)
+  add_subdirectory(demo)
+  add_subdirectory(tools)
+  add_subdirectory(doc)
+  add_subdirectory(test)
+endif()
 
-SET( CMAKE_BUILD_TYPE "${CMAKE_BUILD_TYPE}" CACHE STRING
-    "Choose the type of build, options are: None(CMAKE_CXX_FLAGS or CMAKE_C_FLAGS used) Debug Release RelWithDebInfo MinSizeRel Maintainer."
-    FORCE )
+# ---------------------------------------------------------------------------
+# CMake config file installation
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
 
-
-INCLUDE(CheckTypeSize)
-CHECK_TYPE_SIZE("long long" LONG_LONG)
-SET(LEMON_HAVE_LONG_LONG ${HAVE_LONG_LONG})
-
-INCLUDE(FindThreads)
-
-IF(NOT LEMON_THREADING)
-  IF(CMAKE_USE_PTHREADS_INIT)
-    SET(LEMON_THREADING "Pthread")
-  ELSEIF(CMAKE_USE_WIN32_THREADS_INIT)
-    SET(LEMON_THREADING "Win32")
-  ELSE()
-    SET(LEMON_THREADING "None")
-  ENDIF()
-ENDIF()
-
-SET( LEMON_THREADING "${LEMON_THREADING}" CACHE STRING
-  "Choose the threading library, options are: Pthread Win32 None."
-  FORCE )
-
-IF(LEMON_THREADING STREQUAL "Pthread")
-  SET(LEMON_USE_PTHREAD TRUE)
-ELSEIF(LEMON_THREADING STREQUAL "Win32")
-  SET(LEMON_USE_WIN32_THREADS TRUE)
-ENDIF()
-
-ENABLE_TESTING()
-
-IF(${CMAKE_BUILD_TYPE} STREQUAL "Maintainer")
-  ADD_CUSTOM_TARGET(check ALL COMMAND ${CMAKE_CTEST_COMMAND})
-ELSE()
-  ADD_CUSTOM_TARGET(check COMMAND ${CMAKE_CTEST_COMMAND})
-ENDIF()
-
-ADD_SUBDIRECTORY(lemon)
-IF(${CMAKE_SOURCE_DIR} STREQUAL ${PROJECT_SOURCE_DIR})
-  ADD_SUBDIRECTORY(contrib)
-  ADD_SUBDIRECTORY(demo)
-  ADD_SUBDIRECTORY(tools)
-  ADD_SUBDIRECTORY(doc)
-  ADD_SUBDIRECTORY(test)
-ENDIF()
-
-CONFIGURE_FILE(
-  ${PROJECT_SOURCE_DIR}/cmake/LEMONConfig.cmake.in
-  ${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake
+configure_file(
+  "${PROJECT_SOURCE_DIR}/cmake/LEMONConfig.cmake.in"
+  "${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake"
   @ONLY
 )
-IF(UNIX)
-  INSTALL(
-    FILES ${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake
+
+if(UNIX)
+  install(
+    FILES "${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake"
     DESTINATION share/lemon/cmake
   )
-ELSEIF(WIN32)
-  INSTALL(
-    FILES ${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake
+elseif(WIN32)
+  install(
+    FILES "${PROJECT_BINARY_DIR}/cmake/LEMONConfig.cmake"
     DESTINATION cmake
   )
-ENDIF()
+endif()
 
-CONFIGURE_FILE(
-  ${PROJECT_SOURCE_DIR}/cmake/version.cmake.in
-  ${PROJECT_BINARY_DIR}/cmake/version.cmake
+configure_file(
+  "${PROJECT_SOURCE_DIR}/cmake/version.cmake.in"
+  "${PROJECT_BINARY_DIR}/cmake/version.cmake"
   @ONLY
 )
 
-SET(ARCHIVE_BASE_NAME ${CMAKE_PROJECT_NAME})
-STRING(TOLOWER ${ARCHIVE_BASE_NAME} ARCHIVE_BASE_NAME)
-SET(ARCHIVE_NAME ${ARCHIVE_BASE_NAME}-${PROJECT_VERSION})
-ADD_CUSTOM_TARGET(dist
-  COMMAND cmake -E remove_directory ${ARCHIVE_NAME}
-  COMMAND hg archive ${ARCHIVE_NAME}
-  COMMAND cmake -E copy cmake/version.cmake ${ARCHIVE_NAME}/cmake/version.cmake
-  COMMAND tar -czf ${ARCHIVE_BASE_NAME}-nodoc-${PROJECT_VERSION}.tar.gz ${ARCHIVE_NAME}
-  COMMAND zip -r ${ARCHIVE_BASE_NAME}-nodoc-${PROJECT_VERSION}.zip ${ARCHIVE_NAME}
-  COMMAND cmake -E copy_directory doc/html ${ARCHIVE_NAME}/doc/html
-  COMMAND tar -czf ${ARCHIVE_NAME}.tar.gz ${ARCHIVE_NAME}
-  COMMAND zip -r ${ARCHIVE_NAME}.zip ${ARCHIVE_NAME}
-  COMMAND cmake -E copy_directory doc/html ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}
-  COMMAND tar -czf ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}.tar.gz ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}
-  COMMAND zip -r ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}.zip ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}
-  COMMAND cmake -E remove_directory ${ARCHIVE_NAME}
-  COMMAND cmake -E remove_directory ${ARCHIVE_BASE_NAME}-doc-${PROJECT_VERSION}
+# ---------------------------------------------------------------------------
+# Source archive target (git-based, no hg)
+# ---------------------------------------------------------------------------
+string(TOLOWER "${PROJECT_NAME}" _archive_base)
+set(_archive_name "${_archive_base}-${PROJECT_VERSION}")
+
+add_custom_target(dist
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${_archive_name}"
+  COMMAND git archive --prefix="${_archive_name}/" --format=tar HEAD
+          | tar -x
+  COMMAND ${CMAKE_COMMAND} -E copy
+          cmake/version.cmake "${_archive_name}/cmake/version.cmake"
+  COMMAND tar -czf "${_archive_base}-nodoc-${PROJECT_VERSION}.tar.gz" "${_archive_name}"
+  COMMAND zip  -r  "${_archive_base}-nodoc-${PROJECT_VERSION}.zip"    "${_archive_name}"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory doc/html "${_archive_name}/doc/html"
+  COMMAND tar -czf "${_archive_name}.tar.gz" "${_archive_name}"
+  COMMAND zip  -r  "${_archive_name}.zip"    "${_archive_name}"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          doc/html "${_archive_base}-doc-${PROJECT_VERSION}"
+  COMMAND tar -czf "${_archive_base}-doc-${PROJECT_VERSION}.tar.gz"
+          "${_archive_base}-doc-${PROJECT_VERSION}"
+  COMMAND zip  -r  "${_archive_base}-doc-${PROJECT_VERSION}.zip"
+          "${_archive_base}-doc-${PROJECT_VERSION}"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${_archive_name}"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${_archive_base}-doc-${PROJECT_VERSION}"
   DEPENDS html
-  WORKING_DIRECTORY ${PROJECT_BINARY_DIR})
+  WORKING_DIRECTORY "${PROJECT_BINARY_DIR}"
+)
 
-# CPACK config (Basically for NSIS)
-IF(${CMAKE_SOURCE_DIR} STREQUAL ${PROJECT_SOURCE_DIR})
-  SET(CPACK_PACKAGE_NAME ${PROJECT_NAME})
-  SET(CPACK_PACKAGE_VENDOR "EGRES")
-  SET(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+unset(_archive_base)
+unset(_archive_name)
+
+# ---------------------------------------------------------------------------
+# CPack / NSIS (top-level build only)
+# ---------------------------------------------------------------------------
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  set(CPACK_PACKAGE_NAME                 "${PROJECT_NAME}")
+  set(CPACK_PACKAGE_VENDOR               "EGRES")
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "LEMON - Library for Efficient Modeling and Optimization in Networks")
-  SET(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
+  set(CPACK_RESOURCE_FILE_LICENSE        "${PROJECT_SOURCE_DIR}/LICENSE")
+  set(CPACK_PACKAGE_VERSION              "${PROJECT_VERSION}")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY    "${PROJECT_NAME} ${PROJECT_VERSION}")
+  set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME} ${PROJECT_VERSION}")
 
-  SET(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+  set(CPACK_COMPONENTS_ALL headers library html_documentation bin)
 
-  SET(CPACK_PACKAGE_INSTALL_DIRECTORY
-    "${PROJECT_NAME} ${PROJECT_VERSION}")
-  SET(CPACK_PACKAGE_INSTALL_REGISTRY_KEY
-    "${PROJECT_NAME} ${PROJECT_VERSION}")
+  set(CPACK_COMPONENT_HEADERS_DISPLAY_NAME          "C++ headers")
+  set(CPACK_COMPONENT_LIBRARY_DISPLAY_NAME           "Dynamic-link library")
+  set(CPACK_COMPONENT_BIN_DISPLAY_NAME               "Command line utilities")
+  set(CPACK_COMPONENT_HTML_DOCUMENTATION_DISPLAY_NAME "HTML documentation")
 
-  SET(CPACK_COMPONENTS_ALL headers library html_documentation bin)
+  set(CPACK_COMPONENT_HEADERS_DESCRIPTION            "C++ header files")
+  set(CPACK_COMPONENT_LIBRARY_DESCRIPTION            "DLL and import library")
+  set(CPACK_COMPONENT_BIN_DESCRIPTION                "Command line utilities")
+  set(CPACK_COMPONENT_HTML_DOCUMENTATION_DESCRIPTION "Doxygen generated documentation")
 
-  SET(CPACK_COMPONENT_HEADERS_DISPLAY_NAME "C++ headers")
-  SET(CPACK_COMPONENT_LIBRARY_DISPLAY_NAME "Dynamic-link library")
-  SET(CPACK_COMPONENT_BIN_DISPLAY_NAME "Command line utilities")
-  SET(CPACK_COMPONENT_HTML_DOCUMENTATION_DISPLAY_NAME "HTML documentation")
+  set(CPACK_COMPONENT_HEADERS_DEPENDS  library)
+  set(CPACK_COMPONENT_HEADERS_GROUP    "Development")
+  set(CPACK_COMPONENT_LIBRARY_GROUP    "Development")
+  set(CPACK_COMPONENT_HTML_DOCUMENTATION_GROUP "Documentation")
 
-  SET(CPACK_COMPONENT_HEADERS_DESCRIPTION
-    "C++ header files")
-  SET(CPACK_COMPONENT_LIBRARY_DESCRIPTION
-    "DLL and import library")
-  SET(CPACK_COMPONENT_BIN_DESCRIPTION
-    "Command line utilities")
-  SET(CPACK_COMPONENT_HTML_DOCUMENTATION_DESCRIPTION
-    "Doxygen generated documentation")
-
-  SET(CPACK_COMPONENT_HEADERS_DEPENDS library)
-
-  SET(CPACK_COMPONENT_HEADERS_GROUP "Development")
-  SET(CPACK_COMPONENT_LIBRARY_GROUP "Development")
-  SET(CPACK_COMPONENT_HTML_DOCUMENTATION_GROUP "Documentation")
-
-  SET(CPACK_COMPONENT_GROUP_DEVELOPMENT_DESCRIPTION
+  set(CPACK_COMPONENT_GROUP_DEVELOPMENT_DESCRIPTION
     "Components needed to develop software using LEMON")
-  SET(CPACK_COMPONENT_GROUP_DOCUMENTATION_DESCRIPTION
+  set(CPACK_COMPONENT_GROUP_DOCUMENTATION_DESCRIPTION
     "Documentation of LEMON")
 
-  SET(CPACK_ALL_INSTALL_TYPES Full Developer)
+  set(CPACK_ALL_INSTALL_TYPES Full Developer)
+  set(CPACK_COMPONENT_HEADERS_INSTALL_TYPES          Developer Full)
+  set(CPACK_COMPONENT_LIBRARY_INSTALL_TYPES          Developer Full)
+  set(CPACK_COMPONENT_HTML_DOCUMENTATION_INSTALL_TYPES Full)
 
-  SET(CPACK_COMPONENT_HEADERS_INSTALL_TYPES Developer Full)
-  SET(CPACK_COMPONENT_LIBRARY_INSTALL_TYPES Developer Full)
-  SET(CPACK_COMPONENT_HTML_DOCUMENTATION_INSTALL_TYPES Full)
+  set(CPACK_GENERATOR             "NSIS")
+  set(CPACK_NSIS_MUI_ICON         "${PROJECT_SOURCE_DIR}/cmake/nsis/lemon.ico")
+  set(CPACK_NSIS_MUI_UNIICON      "${PROJECT_SOURCE_DIR}/cmake/nsis/uninstall.ico")
+  set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\lemon.ico")
+  set(CPACK_NSIS_DISPLAY_NAME     "${CPACK_PACKAGE_INSTALL_DIRECTORY} ${PROJECT_NAME}")
+  set(CPACK_NSIS_HELP_LINK        "http:\\\\\\\\lemon.cs.elte.hu")
+  set(CPACK_NSIS_URL_INFO_ABOUT   "http:\\\\\\\\lemon.cs.elte.hu")
+  set(CPACK_NSIS_CONTACT          "lemon-user@lemon.cs.elte.hu")
+  set(CPACK_NSIS_CREATE_ICONS_EXTRA
+    "CreateShortCut \\\"$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\Documentation.lnk\\\" \
+\\\"$INSTDIR\\\\share\\\\doc\\\\index.html\\\"")
+  set(CPACK_NSIS_DELETE_ICONS_EXTRA
+    "!insertmacro MUI_STARTMENU_GETFOLDER Application $MUI_TEMP\n\
+    Delete \\\"$SMPROGRAMS\\\\$MUI_TEMP\\\\Documentation.lnk\\\"")
 
-  SET(CPACK_GENERATOR "NSIS")
-  SET(CPACK_NSIS_MUI_ICON "${PROJECT_SOURCE_DIR}/cmake/nsis/lemon.ico")
-  SET(CPACK_NSIS_MUI_UNIICON "${PROJECT_SOURCE_DIR}/cmake/nsis/uninstall.ico")
-  #SET(CPACK_PACKAGE_ICON "${PROJECT_SOURCE_DIR}/cmake/nsis\\\\installer.bmp")
-  SET(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\lemon.ico")
-  SET(CPACK_NSIS_DISPLAY_NAME "${CPACK_PACKAGE_INSTALL_DIRECTORY} ${PROJECT_NAME}")
-  SET(CPACK_NSIS_HELP_LINK "http:\\\\\\\\lemon.cs.elte.hu")
-  SET(CPACK_NSIS_URL_INFO_ABOUT "http:\\\\\\\\lemon.cs.elte.hu")
-  SET(CPACK_NSIS_CONTACT "lemon-user@lemon.cs.elte.hu")
-  SET(CPACK_NSIS_CREATE_ICONS_EXTRA "
-    CreateShortCut \\\"$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\Documentation.lnk\\\" \\\"$INSTDIR\\\\share\\\\doc\\\\index.html\\\"
-    ")
-  SET(CPACK_NSIS_DELETE_ICONS_EXTRA "
-    !insertmacro MUI_STARTMENU_GETFOLDER Application $MUI_TEMP
-    Delete \\\"$SMPROGRAMS\\\\$MUI_TEMP\\\\Documentation.lnk\\\"
-    ")
-
-  INCLUDE(CPack)
-ENDIF()
+  include(CPack)
+endif()
