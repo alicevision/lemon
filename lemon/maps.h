@@ -1969,8 +1969,13 @@ namespace lemon {
     /// be accessed in the <tt>[beginValue, endValue)</tt> range.
     /// They are considered with multiplicity, so each value is
     /// traversed for each item it is assigned to.
-    class ValueIt
-      : public std::iterator<std::forward_iterator_tag, Value> {
+    class ValueIt {
+    public:
+      using iterator_category = std::forward_iterator_tag;
+      using value_type        = Value;
+      using difference_type   = std::ptrdiff_t;
+      using pointer           = Value*;
+      using reference         = Value&;
       friend class CrossRefMap;
     private:
       ValueIt(typename Container::const_iterator _it)
@@ -3131,8 +3136,13 @@ namespace lemon {
     /// This iterator is an STL compatible forward
     /// iterator on the values of the map. The values can
     /// be accessed in the <tt>[beginValue, endValue)</tt> range.
-    class ValueIt
-      : public std::iterator<std::forward_iterator_tag, Value> {
+    class ValueIt {
+    public:
+      using iterator_category = std::forward_iterator_tag;
+      using value_type        = Value;
+      using difference_type   = std::ptrdiff_t;
+      using pointer           = Value*;
+      using reference         = Value&;
       friend class IterableValueMap;
     private:
       ValueIt(typename std::map<Value, Key>::const_iterator _it)
