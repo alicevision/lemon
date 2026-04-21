@@ -1,20 +1,25 @@
-INCLUDE_DIRECTORIES(
-  ${PROJECT_SOURCE_DIR}
-  ${PROJECT_BINARY_DIR}
+# ---------------------------------------------------------------------------
+# lemon/CMakeLists.txt
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Configure generated headers
+# ---------------------------------------------------------------------------
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/config.h"
 )
 
-CONFIGURE_FILE(
-  ${CMAKE_CURRENT_SOURCE_DIR}/config.h.in
-  ${CMAKE_CURRENT_BINARY_DIR}/config.h
-)
-
-CONFIGURE_FILE(
-  ${CMAKE_CURRENT_SOURCE_DIR}/lemon.pc.in
-  ${CMAKE_CURRENT_BINARY_DIR}/lemon.pc
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/lemon.pc.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/lemon.pc"
   @ONLY
 )
 
-SET(LEMON_SOURCES
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+set(LEMON_SOURCES
   arg_parser.cc
   base.cc
   color.cc
@@ -24,68 +29,148 @@ SET(LEMON_SOURCES
   bits/windows.cc
 )
 
-IF(LEMON_HAVE_GLPK)
-  SET(LEMON_SOURCES ${LEMON_SOURCES} glpk.cc)
-  INCLUDE_DIRECTORIES(${GLPK_INCLUDE_DIRS})
-  IF(WIN32)
-    INSTALL(FILES ${GLPK_BIN_DIR}/glpk.dll DESTINATION bin)
-    INSTALL(FILES ${GLPK_BIN_DIR}/libltdl3.dll DESTINATION bin)
-    INSTALL(FILES ${GLPK_BIN_DIR}/zlib1.dll DESTINATION bin)
-  ENDIF()
-ENDIF()
+if(LEMON_HAVE_GLPK)
+  list(APPEND LEMON_SOURCES glpk.cc)
+endif()
+if(LEMON_HAVE_CPLEX)
+  list(APPEND LEMON_SOURCES cplex.cc)
+endif()
+if(LEMON_HAVE_CLP)
+  list(APPEND LEMON_SOURCES clp.cc)
+endif()
+if(LEMON_HAVE_CBC)
+  list(APPEND LEMON_SOURCES cbc.cc)
+endif()
+if(LEMON_HAVE_SOPLEX)
+  list(APPEND LEMON_SOURCES soplex.cc)
+endif()
 
-IF(LEMON_HAVE_CPLEX)
-  SET(LEMON_SOURCES ${LEMON_SOURCES} cplex.cc)
-  INCLUDE_DIRECTORIES(${ILOG_INCLUDE_DIRS})
-ENDIF()
+# ---------------------------------------------------------------------------
+# Library type  (contrôlé par BUILD_SHARED_LIBS, standard CMake)
+#   cmake -DBUILD_SHARED_LIBS=ON  ...   → shared (.so / .dll)
+#   cmake -DBUILD_SHARED_LIBS=OFF ...   → static (.a / .lib)  [défaut]
+# ---------------------------------------------------------------------------
+add_library(lemon ${LEMON_SOURCES})
 
-IF(LEMON_HAVE_CLP)
-  SET(LEMON_SOURCES ${LEMON_SOURCES} clp.cc)
-  INCLUDE_DIRECTORIES(${COIN_INCLUDE_DIRS})
-ENDIF()
+# Alias pour que les consumers internes utilisent le même nom que l'extérieur
+add_library(LEMON::lemon ALIAS lemon)
 
-IF(LEMON_HAVE_CBC)
-  SET(LEMON_SOURCES ${LEMON_SOURCES} cbc.cc)
-  INCLUDE_DIRECTORIES(${COIN_INCLUDE_DIRS})
-ENDIF()
-
-IF(LEMON_HAVE_SOPLEX)
-  SET(LEMON_SOURCES ${LEMON_SOURCES} soplex.cc)
-  INCLUDE_DIRECTORIES(${SOPLEX_INCLUDE_DIRS})
-ENDIF()
-
-ADD_LIBRARY(lemon ${LEMON_SOURCES})
-
-TARGET_LINK_LIBRARIES(lemon
-  ${GLPK_LIBRARIES} ${COIN_LIBRARIES} ${ILOG_LIBRARIES} ${SOPLEX_LIBRARIES}
-  )
-
-IF(UNIX)
-  SET_TARGET_PROPERTIES(lemon PROPERTIES OUTPUT_NAME emon VERSION ${LEMON_VERSION} SOVERSION ${LEMON_VERSION})
-ENDIF()
-
-INSTALL(
-  TARGETS lemon
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  COMPONENT library
+# ---------------------------------------------------------------------------
+# Propriétés de la cible
+# ---------------------------------------------------------------------------
+# Note: CXX_VISIBILITY_PRESET hidden n'est pas utilisé ici car les headers
+# publics de lemon n'ont pas de macros d'export (LEMON_API) sur leurs
+# déclarations. Activer hidden visibility sans annoter les headers cache tous
+# les symboles dans la .so → undefined reference à la link.
+# Pour une shared lib, on laisse la visibilité par défaut (public).
+set_target_properties(lemon PROPERTIES
+  OUTPUT_NAME   "emon"
+  VERSION       "${PROJECT_VERSION}"
+  SOVERSION     "${PROJECT_VERSION_MAJOR}"        # ABI : majeur seulement
+  # Position-independent code : obligatoire pour les .so, inoffensif pour .a
+  POSITION_INDEPENDENT_CODE ON
 )
 
-INSTALL(
-  DIRECTORY . bits concepts
-  DESTINATION include/lemon
-  COMPONENT headers
+# ---------------------------------------------------------------------------
+# Warning flags — copiés directement depuis lemon_warnings (PRIVATE/BUILD only)
+# On n'utilise pas target_link_libraries(lemon PRIVATE lemon_warnings) car
+# CMake inclut quand même les INTERFACE targets PRIVATE dans l'export set,
+# ce qui provoque : "requires target lemon_warnings that is not in any export set"
+# ---------------------------------------------------------------------------
+target_compile_options(lemon
+  PRIVATE
+    $<BUILD_INTERFACE:$<TARGET_PROPERTY:lemon_warnings,INTERFACE_COMPILE_OPTIONS>>
+)
+
+# ---------------------------------------------------------------------------
+# Includes
+# ---------------------------------------------------------------------------
+target_include_directories(lemon
+  PUBLIC
+    # consumers (build tree)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>   # config.h + lemon_export.h
+    # consumers (install tree)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    # solvers — uniquement nécessaires lors de la compilation de lemon lui-même
+    $<$<BOOL:${LEMON_HAVE_GLPK}>:${GLPK_INCLUDE_DIRS}>
+    $<$<BOOL:${LEMON_HAVE_CPLEX}>:${ILOG_INCLUDE_DIRS}>
+    $<$<BOOL:${LEMON_HAVE_CLP}>:${COIN_INCLUDE_DIRS}>
+    $<$<BOOL:${LEMON_HAVE_CBC}>:${COIN_INCLUDE_DIRS}>
+    $<$<BOOL:${LEMON_HAVE_SOPLEX}>:${SOPLEX_INCLUDE_DIRS}>
+)
+
+# ---------------------------------------------------------------------------
+# Link
+# ---------------------------------------------------------------------------
+target_link_libraries(lemon
+  PRIVATE
+    $<$<BOOL:${GLPK_LIBRARIES}>:${GLPK_LIBRARIES}>
+    $<$<BOOL:${COIN_LIBRARIES}>:${COIN_LIBRARIES}>
+    $<$<BOOL:${ILOG_LIBRARIES}>:${ILOG_LIBRARIES}>
+    $<$<BOOL:${SOPLEX_LIBRARIES}>:${SOPLEX_LIBRARIES}>
+    $<$<BOOL:${LEMON_USE_PTHREAD}>:Threads::Threads>
+)
+
+# ---------------------------------------------------------------------------
+# Install — cible
+# ---------------------------------------------------------------------------
+
+include(GNUInstallDirs)
+
+install(
+  TARGETS lemon
+  EXPORT  LEMONTargets
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}"   COMPONENT library
+  LIBRARY DESTINATION "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}"   COMPONENT library
+  RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"   COMPONENT library  # .dll Windows
+)
+
+# ---------------------------------------------------------------------------
+# Install — headers publics
+# ---------------------------------------------------------------------------
+install(
+  DIRECTORY   "${CMAKE_CURRENT_SOURCE_DIR}/"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/lemon"
+  COMPONENT   headers
   FILES_MATCHING PATTERN "*.h"
 )
 
-INSTALL(
-  FILES ${CMAKE_CURRENT_BINARY_DIR}/config.h
-  DESTINATION include/lemon
-  COMPONENT headers
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/config.h"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/lemon"
+  COMPONENT   headers
 )
 
-INSTALL(
-  FILES ${CMAKE_CURRENT_BINARY_DIR}/lemon.pc
-  DESTINATION lib/pkgconfig
+# ---------------------------------------------------------------------------
+# Install — pkg-config
+# ---------------------------------------------------------------------------
+install(
+  FILES "${CMAKE_CURRENT_BINARY_DIR}/lemon.pc"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
 )
 
+# ---------------------------------------------------------------------------
+# Install — export set (consommé par LEMONConfig.cmake)
+# ---------------------------------------------------------------------------
+install(
+  EXPORT      LEMONTargets
+  NAMESPACE   LEMON::
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/lemon/cmake"
+  COMPONENT   headers
+)
+
+# ---------------------------------------------------------------------------
+# DLL Windows : copie des DLL tierces
+# ---------------------------------------------------------------------------
+if(WIN32 AND LEMON_HAVE_GLPK)
+  install(FILES
+    "${GLPK_BIN_DIR}/glpk.dll"
+    "${GLPK_BIN_DIR}/libltdl3.dll"
+    "${GLPK_BIN_DIR}/zlib1.dll"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  )
+endif()

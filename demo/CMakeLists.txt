@@ -1,19 +1,20 @@
-INCLUDE_DIRECTORIES(
-  ${PROJECT_SOURCE_DIR}
-  ${PROJECT_BINARY_DIR}
-)
+# ---------------------------------------------------------------------------
+# demo/CMakeLists.txt
+# ---------------------------------------------------------------------------
 
-LINK_DIRECTORIES(
-  ${PROJECT_BINARY_DIR}/lemon
-)
+option(LEMON_BUILD_DEMOS "Build LEMON demo executables." OFF)
 
-SET(DEMOS
+if(NOT LEMON_BUILD_DEMOS)
+  return()
+endif()
+
+set(LEMON_DEMOS
   arg_parser_demo
   graph_to_eps_demo
   lgf_demo
 )
 
-FOREACH(DEMO_NAME ${DEMOS})
-  ADD_EXECUTABLE(${DEMO_NAME} ${DEMO_NAME}.cc)
-  TARGET_LINK_LIBRARIES(${DEMO_NAME} lemon)
-ENDFOREACH()
+foreach(demo IN LISTS LEMON_DEMOS)
+  add_executable(${demo} ${demo}.cc)
+  target_link_libraries(${demo} PRIVATE LEMON::lemon)
+endforeach()
